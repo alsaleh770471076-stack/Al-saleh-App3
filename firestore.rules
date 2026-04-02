@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (UID)
+    // Fields:
+    //   - uid: string (required) - Unique user ID
+    //   - displayName: string (required) - User's full name
+    //   - email: string (required, format: email) - User's email address
+    //   - role: string (required, enum: ['admin', 'user']) - User's role
+    //   - createdAt: timestamp (optional) - Account creation timestamp
+    //
+    // Collection: transactions
+    // Document ID: auto-generated
+    // Fields:
+    //   - type: string (required, enum: ['inward', 'outward']) - Transaction type
+    //   - amount: number (required, positive) - Transaction amount in SR
+    //   - category: string (required) - Category
+    //   - description: string (optional) - Details
+    //   - date: timestamp (required) - Transaction date
+    //   - createdBy: string (required) - UID of the user who recorded this
+    //
+    // Collection: inventory
+    // Document ID: itemId (auto-generated or name)
+    // Fields:
+    //   - name: string (required) - Item name
+    //   - quantity: number (required) - Current stock quantity
+    //   - unit: string (required) - Unit of measurement
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "alsaleh770471076@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'displayName', 'email', 'role', 'createdAt']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.displayName is string && data.displayName.size() > 0 && data.displayName.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidTransaction(data) {
+      return hasOnlyAllowedFields(['type', 'amount', 'category', 'description', 'date', 'createdBy']) &&
+             data.type in ['inward', 'outward'] &&
+             data.amount is number && data.amount > 0 &&
+             data.category is string && data.category.size() > 0 &&
+             data.date is timestamp &&
+             data.createdBy == request.auth.uid;
+    }
+
+    function isValidInventoryItem(data) {
+      return hasOnlyAllowedFields(['name', 'quantity', 'unit']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.quantity is number &&
+             data.unit is string && data.unit.size() > 0;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Users collection
+    match /users/{userId} {
+      // Allow users to read their own profile, or admins to read all
+      allow read: if isOwner(userId) || isAdmin();
+      
+      // Allow creation if user is creating their own profile with 'user' role, or if admin
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) &&
+                    ((isOwner(userId) && request.resource.data.role == 'user') || isAdmin());
+      
+      // Allow update if owner (but cannot change role) or if admin
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) &&
+                    ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+    }
+
+    // Transactions collection
+    match /transactions/{transactionId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidTransaction(request.resource.data);
+      allow update, delete: if isAdmin();
+    }
+
+    // Inventory collection
+    match /inventory/{itemId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
